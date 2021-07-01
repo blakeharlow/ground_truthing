@@ -1,0 +1,17 @@
+/clean_data
+/raw_data
+/outputs
+.Rproj.user
+.Rhistory
+.DS_Store
+Instructions.html
+*.html
+*.pdf
+*.tex
+*.log
+*.RData
+code/*.html
+code/*.pdf
+code/*.tex
+code/*.log
+code/*.RData
