@@ -2,7 +2,7 @@
 title: "solve_nonlin_optimization_for_ground_truthing"
 author: "Blake Harlow"
 date: "6/29/2021"
-last edited: "6/29/2021"
+last edited: "7/1/2021"
 output: pdf_document
 ---
 
@@ -12,8 +12,6 @@ rm(list=ls())
 require("knitr")
 knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
-
-getwd()
 ```
 
 ```{r, import_libraries, warning = "hide", message = FALSE}
@@ -21,114 +19,129 @@ library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(readxl)
-library(rgl)
-library(seewave)  # has rms() function
-
 source("code/makeCleanData.R")
 ```
 
-Open the excel file as a tibble using readxl::read_excel()
-
-```{r, read_data}
+```{r, organize_data}
 excel_path <- "raw_data/2021_06_23_ground_truthing.xlsx"
-data <- read_excel(excel_path) %>%
-  mutate(rn = row_number()) # This will enable me to track each sighting
-clean_data <- data %>% makeCleanData()
+good_data <- read_excel(excel_path) %>%
+  mutate(rn = row_number()) %>% # This will enable me to track each sighting
+  # Now edit t5->t15 sighting and remove problematics sightings
+  rows_update(tibble(rn = 50, bearing = 292.0)) %>%
+  rows_delete(tibble(rn = 18)) %>%
+  rows_delete(tibble(rn = 20)) %>%
+  rows_delete(tibble(rn = 21)) %>%
+  rows_delete(tibble(rn = 22)) %>%
+  rows_delete(tibble(rn = 73))
+
+# remove aeropoint -> aeropoint bearings and add delta columns:
+good_sightings <- good_data %>% makeCleanData()
   
-# This is a vector showing the order of the <x> vector.
+# This is a vector showing the order of the <x> vector. This should
+# only have positions that are included in the sightins of clean_data
 levels <- c("a20","a46","a53","a57","a61","a75","a76","a78","a87","a98",
             "t1","t2","t3","t4","t5","t6","t7",#"t8","t9","t10","t11","t12",
             "t13","t14","t15","t16",
             "p1","p2")
 
 
-# make an initial guess from lin lst sqrs. Order this by levels vector
+# make an initial guess from lin lst sqrs. Then order this by levels vector:
 initial_results <- read.table("./clean_data/initial_results.csv")
-initial_guess <- initial_results[match(levels, initial_results$position),]
+initial_results <- initial_results[match(levels, initial_results$position),]
 # Now alternate x,y, and z to get i_guess vector of form <x1,x2,x3,...,xn,yn,zn.
-i_guess <- c(rbind(initial_guess$x, initial_guess$y,initial_guess$z))
+X_guess <- c(rbind(initial_results$x, initial_results$y,initial_results$z))
+# Now make the first point the origin by shifting all points
+# and then removing the first point
+X_guess_o_shift <- X_guess[1:3]             # get the shift
+X_guess_trunc <- X_guess - X_guess_o_shift  # perform shift
+X_guess_trunc <- X_guess_trunc[-(1:3)]      # now remove first point
 
-# make the first point the origin
-i_guess_o_shift <- i_guess[1:3]
-i_guess_trunc <- i_guess - i_guess_o_shift
-i_guess_trunc <- i_guess_trunc[-(1:3)]
-
-# scale h and v:
+# scale h, v, in clean_data and x, y, z in i_guess_trunc
 len_scale <- 10
-i_guess_trunc <- i_guess_trunc * len_scale
-clean_data_scaled <- clean_data %>%
+X_guess_trunc_scaled <- X_guess_trunc * len_scale
+good_sightings_scaled <- good_sightings %>%
   mutate(horizontal_side = horizontal_side * len_scale,
          vertical_side = vertical_side * len_scale)
+
+
+# Now construct the measured y vector by using the given data_tbl:
+y_measured <- vector(mode = "numeric", length = 0L)
+# loop through each bearing in clean_data
+for (sighting in 1:dim(good_sightings_scaled)[1]){
+  y_measured <- y_measured %>% append(good_sightings_scaled$vertical_side[sighting])
+  y_measured <- y_measured %>% append(good_sightings_scaled$horizontal_side[sighting])
+  y_measured <- y_measured %>% append(good_sightings_scaled$bearing[sighting])
+}
 ```
 
 
-```{r}
-# This function takes a vector of position data: <x1,y1,z1,...,xn,yn,zn> and 
+```{r, define_functions}
+# This function takes a vector of position data: <x2,y2,z2,...,xn,yn,zn> and 
 # returns the hypothetical vertical leg length, horizontal leg length, and 
-# bearing measurements for each bearing given those positions.
+# bearing measurements for each bearing given those positions. Note that
+# X starts with the second measurement since the first measurement was removed
+# in order to leave it fixed as the origin.
 
-getMeasurements <- function(x, clean_data) {
+F_of_X <- function(X, sightings_tbl) {
   # initialize an empty output y vector
   y <- vector(mode = "numeric", length = 0L)
-  x <- c(0,0,0,x)
+  # Add zeros to front of X to complete X data vector and rename to X_full.
+  X_full <- c(0,0,0,X)
   
-  # loop through each bearing in clean_data
-  for (sighting in 1:dim(clean_data)[1]){
+  # loop through each bearing in sightings_tbl
+  for (sighting in 1:dim(sightings_tbl)[1]){
     # get the string positions for the laser and target
-    laser_position <- clean_data$laser_position[sighting]
-    target_position <- clean_data$target_position[sighting]
+    laser_position <- sightings_tbl$laser_position[sighting]
+    target_position <- sightings_tbl$target_position[sighting]
     
-    # using the levels vector, find the indeces for laser and target positions
+    # using the levels vector, find the indexes for laser and target positions
     laser_position_index <- which(levels == laser_position)
     target_position_index <- which(levels == target_position)
     
-    # retrieve positions for laser and target using the indeces found above
-    laser_x <- x[laser_position_index * 3 - 2]
-    laser_y <- x[laser_position_index * 3 - 1]
-    laser_z <- x[laser_position_index * 3]
+    # retrieve positions for laser and target using the indexes found above
+    laser_x <- X_full[laser_position_index * 3 - 2]
+    laser_y <- X_full[laser_position_index * 3 - 1]
+    laser_z <- X_full[laser_position_index * 3]
     
-    target_x <- x[target_position_index * 3 - 2]
-    target_y <- x[target_position_index * 3 - 1]
-    target_z <- x[target_position_index * 3]
+    target_x <- X_full[target_position_index * 3 - 2]
+    target_y <- X_full[target_position_index * 3 - 1]
+    target_z <- X_full[target_position_index * 3]
     
     # compute the hypothetical measurements and append to y
-    v <- target_z - laser_z - clean_data$laser_height[sighting] + clean_data$target_height[sighting]
-    h <- ((target_x - laser_x)^2 + (target_y - laser_y)^2)^(1/2)
+    v <- target_z + sightings_tbl$target_height[sighting] - 
+      laser_z - sightings_tbl$laser_height[sighting]
+    h <- sqrt((target_x - laser_x)^2 + (target_y - laser_y)^2)
     theta <- atan2((target_x - laser_x),(target_y - laser_y))
+    theta_degrees <- theta * 180 / pi             # convert to degrees
+    theta_degrees <- (theta_degrees + 360) %% 360 # since atan2 gives -180->180
     y <- y %>% append(v)
     y <- y %>% append(h)
-    y <- y %>% append(theta)
+    y <- y %>% append(theta_degrees)
   }
   
   return(y)
 }
 
-```
-
-
-```{r}
-# Now construct the measured y vector:
-
-y_measured <- vector(mode = "numeric", length = 0L)
-
-# loop through each bearing in clean_data
-for (sighting in 1:dim(clean_data)[1]){
-  y_measured <- y_measured %>% append(clean_data$vertical_side[sighting])
-  y_measured <- y_measured %>% append(clean_data$horizontal_side[sighting])
-  y_measured <- y_measured %>% append(clean_data$bearing[sighting])
+# Next, define a function that computes the 
+# residuals, i.e: F_of_x - y_measured
+compute_residuals <- function(X, sightings_tbl, y_measured){
+  # Now return the residual
+  return(F_of_X(X, sightings_tbl) - y_measured)
 }
 
+
+# Now construct the actual function to minimize. This is
+# the sum of the squares of the residuals.
+function_to_minimize <- function(X, sightings_tbl, y_measured){
+  residuals <- compute_residuals(X, sightings_tbl, y_measured)
+  return(sum(residuals^2))
+}
 ```
 
-
 ```{r}
-# Now construct the actual function to minimize.
 
-function_to_minimize <- function(x, clean_data){
-  return(sum((getMeasurements(x, clean_data) - y_measured)^2))
-}
+compute_residuals(X_guess_trunc_scaled, clean_data_scaled)[1]
 
-function_to_minimize(i_guess_trunc, clean_data_scaled)
 
 ```
 
@@ -136,12 +149,82 @@ function_to_minimize(i_guess_trunc, clean_data_scaled)
 ```{r}
 # Now complete the optimization:
 
-optim(i_guess_trunc, function_to_minimize, clean_data = clean_data_scaled,
-      method = "BFGS", control = list(trace = TRUE))
+fit <- optim(X_guess_trunc_scaled, function_to_minimize, 
+             data_tbl = clean_data_scaled, y_measured = y_measured,
+             method = "BFGS", control = list(trace = TRUE))
 ```
 
 ```{r}
-# convert back to 
+# Convert a vector back to meters and undo origin shift.
+# Also add first point back in:
+
+undo_shift_and_scale <- function(input) {
+  output <- input / len_scale
+  output <- c(0, 0, 0, output)
+  output <- output + X_guess_o_shift
+  return(output)
+}
+```
 
 
+```{r}
+X_solution <- undo_shift_and_scale(fit$par)
+
+X_solution_tbl <- tibble(position = levels, 
+                    x = X_solution[c(TRUE, FALSE, FALSE)],
+                    y = X_solution[c(FALSE, TRUE, FALSE)],
+                    z = X_solution[c(FALSE, FALSE, TRUE)])
+
+X_guess_tbl <- tibble(position = levels, 
+                    x = X_guess[c(TRUE, FALSE, FALSE)],
+                    y = X_guess[c(FALSE, TRUE, FALSE)],
+                    z = X_guess[c(FALSE, FALSE, TRUE)])
+
+
+clean_data <- clean_data %>%
+  left_join(X_solution_tbl, by = c("laser_position" = "position")) %>% 
+  rename(x_start = x, y_start = y, z_start = z) %>%
+  mutate(x_end = x_start + delta_x,
+         y_end = y_start + delta_y,
+         z_end = z_start + delta_z)
+
+# Now compute residuals and add them to clean_data
+residuals <- compute_residuals(fit$par, clean_data_scaled) %>% matrix(ncol = 3, byrow = TRUE)
+colnames(residuals) <- c("x_residuals","y_residuals","z_residuals")
+residuals <- residuals %>% as_tibble() %>% 
+  mutate(residuals = (x_residuals^2 + y_residuals^2 + z_residuals^2)^(1/2))
+
+residuals <- F_of_x(fit$par, clean_data_scaled) - y_measured %>% 
+  matrix(ncol = 3, byrow = TRUE)
+colnames(residuals) <- c("v_residuals","h_residuals","theta_residuals")
+residuals <- residuals %>% as_tibble() %>% 
+  mutate(residuals = (v_residuals^2 + h_residuals^2 + theta_residuals^2)^(1/2))
+
+clean_data
+residuals
+
+```
+
+```{r}
+
+clean_data
+
+
+```
+
+```{r}
+
+# ggplot() +
+#   geom_point(data = X_guess_tbl, 
+#              aes(x,y)) +
+#   geom_point(data = final_tbl,
+#              aes(x,y), color = "red")
+
+
+ggplot() +
+  geom_point(data = X_solution_tbl, aes(x,y)) +
+  geom_text(data = X_solution_tbl, aes(x, y, label = position),
+            hjust=-0.5, vjust=0, size = 3) +
+  geom_segment(data = clean_data,
+              aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "gray")
 ```
