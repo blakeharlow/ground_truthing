@@ -11,9 +11,7 @@ gc()
 rm(list=ls())
 require("knitr")
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
-
-getwd()
+knitr::opts_knit$set(root.dir = "C:/Users/sumloan/Documents/research/2021/ground_truthing/")
 ```
 
 ```{r, import_libraries, warning = "hide", message = FALSE}
@@ -232,14 +230,14 @@ Let's make a few plots:
 
 ```{r, plot}
 points3 <- tibble(position = cnames3,
-                 x = x_fit3$coefficients, 
-                 y = y_fit3$coefficients, 
+                 x = x_fit3$coefficients,
+                 y = y_fit3$coefficients,
                  z = z_fit3$coefficients,
                  is_aero = 1)
 
 points4 <- tibble(position = cnames4,
-                 x = x_fit4$coefficients, 
-                 y = y_fit4$coefficients, 
+                 x = x_fit4$coefficients,
+                 y = y_fit4$coefficients,
                  z = z_fit4$coefficients,
                  is_aero = 2)
 
@@ -253,6 +251,9 @@ bbox3d(color = "gray", alpha = 0.5)
 
 # This plot should be visible in knit output
 ggplot() +
+  ggtitle("linear. 50 edited. 18,20,21,22,73 removed. ") +
+  xlab("x") + 
+  ylab("y") +
   geom_segment(data = clean_data3,
               aes(x = x_start, y = y_start, xend = x_end, yend = y_end, 
                   color = residuals)) +
@@ -261,8 +262,20 @@ ggplot() +
             size = 3, color = "red") +
   geom_point(data = points3, 
              aes(x, y)) +
+  coord_quickmap() +
   geom_text(data = points3, 
             aes(x, y, label = position), hjust=-0.5, vjust=0, size = 3)
+
+
+# Now save the plot
+filename = "lin_only_data_w_minor_adjustments.png"
+
+if (file.exists(paste0("./outputs/plots/", filename)) == FALSE){
+  ggsave(paste0("./outputs/plots/", filename))
+  cat("The plot was saved")
+} else {
+  cat("That file already exists. Not saving plot.")
+}
 ```
 Notes:
 
@@ -275,6 +288,8 @@ bearings from t2 to t4, t5, t6, and p1 appear to be blunders
 points3
 
 write.table(points3 %>% select(-is_aero), "./clean_data/initial_results.csv")
+
+write.table(points4 %>% select(-is_aero), "./clean_data/initial_results_no_aero.csv")
 
 ```
 

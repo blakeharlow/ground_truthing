@@ -1,0 +1,167 @@
+---
+title: "cleaned_lin_lst_sqrs_for_ground_truthing"
+author: "Blake Harlow"
+date: "7/29/2021"
+last edited: "7/29/2021"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+gc()
+rm(list=ls())
+require("knitr")
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/sumloan/Documents/research/2021/ground_truthing/")
+```
+
+```{r, import_libraries, warning = "hide", message = FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readxl)
+library(rgl)
+library(seewave)  # has rms() function
+library(pracma)   # has rref() function
+
+source("code/createModelMatrix.R")
+source("code/makeCleanData.R")
+source("code/setOrigin.R")
+source("code/calculateVariances.R")
+
+# open the excel file as tibble
+excel_path <- "raw_data/2021_06_23_ground_truthing.xlsx"
+data <- read_excel(excel_path) %>%
+  mutate(rn = row_number()) # This will enable me to track each sighting
+
+# This is the order that I will assign for the laser and target indeces.
+levels <- c("a20","a46","a53","a57","a61","a75","a76","a78","a87","a98",
+            "t1","t2","t3","t4","t5","t6","t7","t8","t9","t10","t11","t12",
+            "t13","t14","t15","t16",
+            "p1","p2")
+```
+
+Next, I will construct the model matrix and the response vector (A and b in the equation Ax=b):
+
+Changes to data:
+t5 -> t15 sighting bearing changed to 292 degrees due to apparent typo.
+removed t2 ->t4,t5,t6, and p1 due to apparent erroneous bearings.
+removed t1 -> a75 sighting due to apparent erroneous laser measurement
+
+```{r, fit_lm}
+# First edit the problematic bearing and remove erroneous sightings.
+# Then use makeCleanData to filter out aeropoint to aeropoint 
+# sightings and also add delta columns. Finally, calculate
+# variances of the delta columns using calculateVariances sourced function.
+clean_data <- data %>% rows_update(tibble(rn = 50, bearing = 292.0)) %>%
+  rows_delete(tibble(rn = 18)) %>%
+  rows_delete(tibble(rn = 20)) %>%
+  rows_delete(tibble(rn = 21)) %>%
+  rows_delete(tibble(rn = 22)) %>%
+  rows_delete(tibble(rn = 73)) %>%
+  makeCleanData() %>%
+  calculateVariances(angle_unc = 1, hyp_unc = 0.1, bearing_unc = 3,
+                     laser_ht_unc = 0.03, target_ht_unc = 0.03)
+
+# Make A matrix and b vectors using sourced functions
+# also make weights vectors as reciprocal of variances
+A <- createModelMatrix(clean_data, levels) %>% setOrigin()
+cnames <- colnames(A)
+b_x <- clean_data$delta_x %>% setOrigin()
+b_y <- clean_data$delta_y %>% setOrigin()
+b_z <- clean_data$delta_z %>% setOrigin()
+w_x <- (clean_data$delta_x_var %>% setOrigin(var_vector = TRUE))^-1
+w_y <- (clean_data$delta_y_var %>% setOrigin(var_vector = TRUE))^-1
+w_z <- (clean_data$delta_z_var %>% setOrigin(var_vector = TRUE))^-1
+
+# And now complete the weighted fit
+x_fit <- lm(b_x ~ A - 1, weights = w_x)
+y_fit <- lm(b_y ~ A - 1, weights = w_y)
+z_fit <- lm(b_z ~ A - 1, weights = w_z)
+# and the nonweighted fit
+x_fit_uw <- lm(b_x ~ A - 1)
+y_fit_uw <- lm(b_y ~ A - 1)
+z_fit_uw <- lm(b_z ~ A - 1)
+
+
+cat("Residual Analysis (weighted):\n\n",
+    "The max residuals are:\n \t x:", max(x_fit$residuals),
+    "\n \t y:", max(y_fit$residuals),
+    "\n \t z:", max(z_fit$residuals),
+    "\n\nThe rms of the residuals are:\n \t x:", rms(x_fit$residuals),
+    "\n \t y:", rms(y_fit$residuals),
+    "\n \t z:", rms(z_fit$residuals)
+    )
+
+cat("\nResidual Analysis (nonweighted):\n\n",
+    "The max residuals are:\n \t x:", max(x_fit_uw$residuals),
+    "\n \t y:", max(y_fit_uw$residuals),
+    "\n \t z:", max(z_fit_uw$residuals),
+    "\n\nThe rms of the residuals are:\n \t x:", rms(x_fit_uw$residuals),
+    "\n \t y:", rms(y_fit_uw$residuals),
+    "\n \t z:", rms(z_fit_uw$residuals)
+    )
+
+# get residual data and find largest residuals
+clean_data <- clean_data %>%
+  mutate(x_residuals = x_fit$residuals %>% head(-1),
+         y_residuals = y_fit$residuals %>% head(-1),
+         z_residuals = z_fit$residuals %>% head(-1),
+         residuals = (x_residuals^2 + y_residuals^2 + z_residuals^2)^(1/2),
+         x_start = x_fit$coefficients[paste("A", laser_position, sep = "")],
+         y_start = y_fit$coefficients[paste("A", laser_position, sep = "")],
+         z_start = z_fit$coefficients[paste("A", laser_position, sep = "")],
+         x_end = x_start + delta_x,
+         y_end = y_start + delta_y,
+         z_end = z_start + delta_z)
+worst_sightings <- clean_data #%>%
+ # filter(residuals > 2) # filtering out the sightings with greatest residuals
+```
+
+
+```{r, plot}
+points <- tibble(position = cnames,
+                 x = x_fit$coefficients,
+                 y = y_fit$coefficients,
+                 z = z_fit$coefficients,
+                 x_uw = x_fit_uw$coefficients,
+                 y_uw = y_fit_uw$coefficients,
+                 z_uw = z_fit_uw$coefficients,)
+
+# plot
+ggplot() +
+  ggtitle("Weighted Linear Least Squares") +
+  xlab("x") + 
+  ylab("y") +
+  geom_segment(data = worst_sightings,
+              aes(x = x_start, y = y_start, xend = x_end, yend = y_end), 
+                  color = "gray") +
+  # geom_text(data = worst_sightings,
+  #           aes(x_end, y_end, label = target_position), hjust=1, vjust=-1,
+  #           size = 3, color = "red") +
+  geom_point(data = points, 
+             aes(x, y), color = "black") +
+  # geom_point(data = points, 
+  #            aes(x_uw, y_uw), color = "blue") +
+  coord_quickmap() +
+  geom_text(data = points, 
+            aes(x, y, label = position), hjust=-0.5, vjust=0, size = 3)
+
+
+# Now save the plot
+filename = "lin_only_data_w_minor_adjustments_weighted.png"
+
+if (file.exists(paste0("./outputs/plots/", filename)) == FALSE){
+  ggsave(paste0("./outputs/plots/", filename))
+  cat("The plot was saved")
+} else {
+  cat("That file already exists. Not saving plot.")
+}
+```
+
+
+
+```{r save_positions}
+
+write.table(points, "./clean_data/linear_results_weighted.csv")
+
+```

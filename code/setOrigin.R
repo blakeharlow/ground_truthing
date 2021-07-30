@@ -13,11 +13,19 @@
 # response vector (b), it is essentially fixing the origin
 # at the "t1" position.
 
+# If the var_vector parameter is set to True, than the
+# appended value is equal to the smallest value in the
+# rest of the vector. This is preferred to appending with
+# zero, which would result in an infinite weight.
 
 
-setOrigin <- function(input) {
+
+setOrigin <- function(input, var_vector = FALSE) {
   if (is.null(dim(input))){
-    # then inpu is a vector:
+    # then input is a vector:
+    if (var_vector == TRUE){
+      return(append(input, min(input)))
+    }
     return(append(input, 0))
   }
   else {

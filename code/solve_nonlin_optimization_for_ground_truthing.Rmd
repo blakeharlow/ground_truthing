@@ -2,7 +2,7 @@
 title: "solve_nonlin_optimization_for_ground_truthing"
 author: "Blake Harlow"
 date: "6/29/2021"
-last edited: "7/1/2021"
+last edited: "7/29/2021"
 output: pdf_document
 ---
 
@@ -24,6 +24,7 @@ source("code/fix_theta_residuals.R")
 ```
 
 ```{r, organize_data}
+# sightings
 excel_path <- "raw_data/2021_06_23_ground_truthing.xlsx"
 good_data <- read_excel(excel_path) %>%
   mutate(rn = row_number()) %>% # This will enable me to track each sighting
@@ -36,10 +37,12 @@ good_data <- read_excel(excel_path) %>%
   rows_delete(tibble(rn = 73))
 
 # remove aeropoint -> aeropoint bearings and add delta columns:
-good_sightings <- good_data %>% makeCleanData()
+good_sightings <- good_data %>%
+ # filter(substring(target_position,1,1) != "a") %>%
+   makeCleanData()
   
 # This is a vector showing the order of the <x> vector. This should
-# only have positions that are included in the sightins of clean_data
+# only have positions that are included in the sightings of good_sightings
 levels <- c("a20","a46","a53","a57","a61","a75","a76","a78","a87","a98",
             "t1","t2","t3","t4","t5","t6","t7",#"t8","t9","t10","t11","t12",
             "t13","t14","t15","t16",
@@ -47,9 +50,9 @@ levels <- c("a20","a46","a53","a57","a61","a75","a76","a78","a87","a98",
 
 
 # make an initial guess from lin lst sqrs. Then order this by levels vector:
-initial_results <- read.table("./clean_data/initial_results.csv")
+initial_results <- read.table("./clean_data/linear_results_weighted.csv")
 initial_results <- initial_results[match(levels, initial_results$position),]
-# Now alternate x,y, and z to get i_guess vector of form <x1,x2,x3,...,xn,yn,zn.
+# Now alternate x, y, and z to get i_guess vector of form <x1,x2,x3,...,xn,yn,zn.
 X_guess <- c(rbind(initial_results$x, initial_results$y,initial_results$z))
 # Now make the first point the origin by shifting all points
 # and then removing the first point
@@ -58,7 +61,7 @@ X_guess_trunc <- X_guess - X_guess_o_shift  # perform shift
 X_guess_trunc <- X_guess_trunc[-(1:3)]      # now remove first point
 
 # scale h, v, in clean_data and x, y, z in i_guess_trunc
-len_scale <- 1
+len_scale <- 100
 X_guess_trunc_scaled <- X_guess_trunc * len_scale
 good_sightings_scaled <- good_sightings %>%
   mutate(horizontal_side = horizontal_side * len_scale,
@@ -76,7 +79,6 @@ for (sighting in 1:dim(good_sightings_scaled)[1]){
   y_measured <- y_measured %>% append(good_sightings_scaled$bearing[sighting])
 }
 ```
-
 
 ```{r, define_functions}
 # This function takes a vector of position data: <x2,y2,z2,...,xn,yn,zn> and 
@@ -144,13 +146,6 @@ function_to_minimize <- function(X, sightings_tbl, y_measured){
 ```
 
 ```{r}
-
-compute_residuals(X_guess_trunc_scaled, good_sightings_scaled, y_measured)
-
-```
-
-
-```{r}
 # Now complete the optimization:
 
 fit <- optim(X_guess_trunc_scaled, function_to_minimize, 
@@ -159,30 +154,36 @@ fit <- optim(X_guess_trunc_scaled, function_to_minimize,
 ```
 
 ```{r, define_function_to_undo_shift_and_scale}
-# Convert a vector back to meters and undo origin shift.
-# Also add first point back in:
+# Convert a vector back to meters.
+# Also add first point back in.
+# and finally, set t1 back to the origin
+# levels is a list of the position names.
+# len_scale is the scale by which the data was initially scaled
 
-undo_shift_and_scale <- function(input) {
-  output <- input / len_scale
-  output <- c(0, 0, 0, output)
-  output <- output + X_guess_o_shift
+undo_shift_and_scale <- function(input, levels, len_scale) {
+  output <- input / len_scale                           # scale to meters
+  output <- c(0, 0, 0, output)                          # add first point back
+  t1_index = which(levels == "t1")                      # find location of t1
+  shift <- output[(3 * t1_index - 2) : (3 * t1_index)]  # get the shift
+  output <- output - shift                              # perform shift
   return(output)
 }
 ```
 
 
 ```{r}
-X_solution <- undo_shift_and_scale(fit$par)
+X_solution <- undo_shift_and_scale(fit$par, levels, len_scale)
 
 X_solution_tbl <- tibble(position = levels, 
                          x = X_solution[c(TRUE, FALSE, FALSE)],
                          y = X_solution[c(FALSE, TRUE, FALSE)],
-                         z = X_solution[c(FALSE, FALSE, TRUE)])
-
-X_guess_tbl <- tibble(position = levels,
-                      x = X_guess[c(TRUE, FALSE, FALSE)],
-                      y = X_guess[c(FALSE, TRUE, FALSE)],
-                      z = X_guess[c(FALSE, FALSE, TRUE)])
+                         z = X_solution[c(FALSE, FALSE, TRUE)],
+                         x_guess = X_guess[c(TRUE, FALSE, FALSE)],
+                         y_guess = X_guess[c(FALSE, TRUE, FALSE)],
+                         z_guess = X_guess[c(FALSE, FALSE, TRUE)],
+                         x_dif = x - x_guess,
+                         y_dif = y - y_guess,
+                         z_dif = z - z_guess)
 
 
 good_sightings_located <- good_sightings %>%
@@ -203,31 +204,34 @@ good_sightings_located <- good_sightings_located %>%
   mutate(v_residuals = residuals$v_residuals,
          h_residuals = residuals$h_residuals,
          theta_residuals = residuals$theta_residuals,
-         residuals = residuals$residuals) %>%
-  filter(residuals > 2)
+         residuals = residuals$residuals)
 ```
 
-```{r}
 
-y_measured %>% matrix(ncol = 3, byrow = TRUE)
-
-
-```
-
-```{r}
-
-# ggplot() +
-#   geom_point(data = X_guess_tbl, 
-#              aes(x,y)) +
-#   geom_point(data = final_tbl,
-#              aes(x,y), color = "red")
+```{r, plot}
 
 
 ggplot() +
-  geom_point(data = X_guess_tbl, aes(x,y), color = "red") +
-  geom_point(data = X_solution_tbl, aes(x,y)) +
+  ggtitle("Nonlinear and Weighted Linear Solution") +
+  xlab("x") + 
+  ylab("y") +
+  geom_segment(data = good_sightings_located,
+               aes(x = x_start, y = y_start, xend = x_end, yend = y_end),
+               color = "gray", size = 0.1) +
+  geom_point(data = X_solution_tbl, aes(x,y, color = "Solution")) +
+  geom_point(data = X_solution_tbl, aes(x_guess,y_guess, color = "Guess")) +
+  coord_quickmap() +
   geom_text(data = X_solution_tbl, aes(x, y, label = position),
-            hjust=-0.5, vjust=0, size = 3)
-  # geom_segment(data = good_sightings_located,
-  #             aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "gray")
+            hjust=1.5, vjust=0, size = 2)
+
+
+filename <- "nonlin_and_lin_weighted_w_minor_adjustments_cm.png"
+
+if (file.exists(paste0("./outputs/plots/", filename)) == FALSE){
+  ggsave(paste0("./outputs/plots/", filename))
+  cat("The plot was saved")
+} else {
+  cat("That file already exists. Not saving plot.")
+}
 ```
+
