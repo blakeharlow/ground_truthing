@@ -1,0 +1,63 @@
+---
+title: "rotate_and_translate_using_aeropoint_data"
+author: "Blake Harlow"
+date: "7/30/2021"
+last edited: "7/30/2021"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+gc()
+rm(list=ls())
+require("knitr")
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/sumloan/Documents/research/2021/ground_truthing/")
+```
+
+```{r, import_libraries, warning = "hide", message = FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(seewave)  # has rms() function
+
+# open the relative position fit data
+relative_positions <- read.table("./clean_data/linear_results_weighted.csv")
+
+
+# This is the order that I will assign for the laser and target indeces.
+ confirmed_points <- c("a20","a46","a53","a57","a61","a75","a76","a78","a87","a98")
+```
+
+```{r}
+# open the aeropoint data csv
+confirmed_positions <- read.table("./clean_data/6_23_2021_aeropoint_data.csv", sep = ",", fill = TRUE) %>%
+  select(V3, V9, V10, V11, V12, V13, V14)   # select columns of interest
+
+# remove empty rows
+confirmed_positions <- confirmed_positions[!apply(confirmed_positions == "", 1, all), ]
+# and one more row (the row with header names)
+confirmed_positions <- confirmed_positions[-1,]
+
+
+
+confirmed_positions <- confirmed_positions %>%
+  # transform to numeric
+  transform(V9 = as.numeric(V9), V10 = as.numeric(V10),
+            V11 = as.numeric(V11), V12 = as.numeric(V12),
+            V13 = as.numeric(V13), V14 = as.numeric(V14)) %>%
+  # remove failed aeropoints
+  filter(V12 < 60 | V13 < 60 | V14 < 60) %>%
+  # select columns of interest
+  select(-V12, -V13, -V14) %>%
+  # clean up ID column
+  transform(V3 = substr(V3, nchar(V3) - 1, nchar(V3))) %>%
+  # provide useful names to columns
+  dplyr::rename("ID" = V3, "x" = V9, "y" = V10, "z" = V11)
+
+# now check out this tibble
+confirmed_positions
+
+
+```
+
+
