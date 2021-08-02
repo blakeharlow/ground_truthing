@@ -2,7 +2,7 @@
 title: "rotate_and_translate_using_aeropoint_data"
 author: "Blake Harlow"
 date: "7/30/2021"
-last edited: "7/30/2021"
+last edited: "8/2/2021"
 output: pdf_document
 ---
 
@@ -20,27 +20,37 @@ library(tidyr)
 library(ggplot2)
 library(seewave)  # has rms() function
 
+source("code/fix_theta_residuals.R")
+```
+
+```{r, relative_positions}
+
 # open the relative position fit data
 relative_positions <- read.table("./clean_data/linear_results_weighted.csv")
 
+relative_positions_aeropoints <- relative_positions %>%
+  # get only positions that are aeropoints
+  filter(substring(position, 1, 1) == 'a') %>%
+  # now rename the aeropoints just by the last two digits
+  transform(position = substring(position, 2, 3))
 
-# This is the order that I will assign for the laser and target indeces.
- confirmed_points <- c("a20","a46","a53","a57","a61","a75","a76","a78","a87","a98")
+# check out this tibble:
+relative_positions_aeropoints
+
 ```
 
-```{r}
+```{r, gps_positions}
 # open the aeropoint data csv
-confirmed_positions <- read.table("./clean_data/6_23_2021_aeropoint_data.csv", sep = ",", fill = TRUE) %>%
+gps_positions <- read.table("./clean_data/6_23_2021_aeropoint_data.csv", sep = ",", fill = TRUE) %>%
   select(V3, V9, V10, V11, V12, V13, V14)   # select columns of interest
 
 # remove empty rows
-confirmed_positions <- confirmed_positions[!apply(confirmed_positions == "", 1, all), ]
+gps_positions <- gps_positions[!apply(gps_positions == "", 1, all), ]
 # and one more row (the row with header names)
-confirmed_positions <- confirmed_positions[-1,]
+gps_positions <- gps_positions[-1,]
 
-
-
-confirmed_positions <- confirmed_positions %>%
+# now clean up the resulting tibble:
+gps_positions <- gps_positions %>%
   # transform to numeric
   transform(V9 = as.numeric(V9), V10 = as.numeric(V10),
             V11 = as.numeric(V11), V12 = as.numeric(V12),
@@ -52,12 +62,149 @@ confirmed_positions <- confirmed_positions %>%
   # clean up ID column
   transform(V3 = substr(V3, nchar(V3) - 1, nchar(V3))) %>%
   # provide useful names to columns
-  dplyr::rename("ID" = V3, "x" = V9, "y" = V10, "z" = V11)
+  dplyr::rename("ID" = V3, "gps_x" = V9, "gps_y" = V10, "gps_z" = V11)
 
-# now check out this tibble
-confirmed_positions
-
-
+# finally, check out this tibble
+gps_positions
 ```
 
 
+```{r, join_positions_tibbles}
+
+# join tibbles by the position column:
+positions <- gps_positions %>%
+  left_join(relative_positions_aeropoints, by = c("ID" = "position"))
+
+positions
+```
+
+Now that I both the gps data as well as the corresponding aeropoint's relative positions all in one neat tibble, I can start computing the transformation.
+
+I will star tby computing the theta transform (rotation about the z axis). To do this, I will find the current polar angle (when viewed from above) for each vector between points. Taking the difference between this angle with the gps data and the relative data will give the theta shift. The average of these theta shifts will be the best theta shift.
+
+```{r, compute_theta_transform}
+
+# Technically, this gets each vector twice (once in each direction),
+# but this is not an issue because it at least happens for each vector.
+# I do, however, need to remove cases where the final and initial point
+# are the same
+vectors <- expand.grid(positions$ID, positions$ID) %>%
+  # now get data for initial and final positions from positions tibble
+  left_join(positions, by = c("Var1" = "ID")) %>%
+  rename("gps_x_i" = gps_x, "gps_y_i" = gps_y, "gps_z_i" = gps_z,
+         "x_i" = x, "y_i" = y, "z_i" = z) %>%
+  left_join(positions, by = c("Var2" = "ID")) %>%
+  rename("gps_x_f" = gps_x, "gps_y_f" = gps_y, "gps_z_f" = gps_z,
+         "x_f" = x, "y_f" = y, "z_f" = z) %>%
+  # remove cases where final and initial point are the same
+  filter(Var1 != Var2)
+
+# and finanlly add theta information
+vectors <- vectors %>%
+  mutate(gps_delta_x = gps_x_f - gps_x_i,
+         gps_delta_y = gps_y_f - gps_y_i,
+         delta_x = x_f - x_i,
+         delta_y = y_f - y_i,
+         
+         gps_theta = atan2(gps_delta_y, gps_delta_x),
+         theta = atan2(delta_y, delta_x),
+         
+         theta_error = gps_theta - theta,
+         theta_error = ifelse(theta_error < -pi,
+                              2 * pi + theta_error, theta_error))
+
+# Now get the average theta_error and use as correction
+theta_shift <- mean(vectors$theta_error)
+theta_shift * 180 / pi
+```
+It appears that the theta shift is approximately 13 degrees. Now, I will shift the data by this correction about the point (x,y) = (0,0). I will also apply this same transformation to the relative_positions tibble with all points.
+
+```{r}
+
+positions <- positions %>%
+  mutate(r_polar = sqrt(x^2 + y^2),
+         theta = atan2(y, x),
+         
+         theta_transformed = theta + theta_shift,
+         
+         x_theta_transformed = r_polar * cos(theta_transformed),
+         y_theta_transformed = r_polar * sin(theta_transformed)) %>%
+  select(-x, -y, -r_polar, - theta, -theta_transformed)
+
+relative_positions <- relative_positions %>%
+  mutate(r_polar = sqrt(x^2 + y^2),
+         theta = atan2(y, x),
+         
+         theta_transformed = theta + theta_shift,
+         
+         x_theta_transformed = r_polar * cos(theta_transformed),
+         y_theta_transformed = r_polar * sin(theta_transformed)) %>%
+  select(-x, -y, -r_polar, - theta, -theta_transformed)
+
+```
+
+Now, I will compute the x, y, and z shifts. I will do this using the same method as finding the theta shift: find the average difference between the gps data and relative data for x, y, and z and use this as the shift for each direction.
+
+```{r}
+
+# get the delta x, y, and z values
+positions <- positions %>%
+  mutate(x_error = gps_x - x_theta_transformed,
+         y_error = gps_y - y_theta_transformed,
+         z_error = gps_z - z)
+
+
+# now get average delta values:
+x_shift <- mean(positions$x_error)
+y_shift <- mean(positions$y_error)
+z_shift <- mean(positions$z_error)
+```
+
+Now that I have the shifts, I can apply them to the data (including relative_positions tibble with all points).
+
+```{r}
+
+positions <- positions %>%
+  mutate(x_transformed = x_theta_transformed + x_shift,
+         y_transformed = y_theta_transformed + y_shift,
+         z_transformed = z + z_shift) %>%
+  select(-x_theta_transformed, -y_theta_transformed, -z,
+         -x_error, -y_error, -z_error)
+
+relative_positions <- relative_positions %>%
+  mutate(x_transformed = x_theta_transformed + x_shift,
+         y_transformed = y_theta_transformed + y_shift,
+         z_transformed = z + z_shift) %>%
+  select(-x_theta_transformed, -y_theta_transformed, -z)
+
+```
+
+Now try plotting the aeropoint gps positions with the transformed relative positions.
+
+```{r}
+
+ggplot(data = positions) +
+  geom_point(mapping = aes(x = gps_x, y = gps_y, color = "gps")) +
+  geom_point(mapping = aes(x = x_transformed, y = y_transformed, color = "transformed values",))
+
+```
+
+This looks reasonable, so I will now plot all of the corrected data and save the results to disk.
+
+```{r}
+
+ggplot(data = relative_positions) +
+  geom_point(mapping = aes(x = x_transformed, y = y_transformed))
+
+```
+
+```{r}
+# save the positions
+# (first rename)
+
+relative_positions <- relative_positions %>%
+  rename("x" = x_transformed, "y" = y_transformed, "z" = z_transformed)
+
+write.table(relative_positions, "./clean_data/linear_results_weighted_transformed.csv")
+
+```
